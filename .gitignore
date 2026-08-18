@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.vite/
+.run/
+*.log
+*.pid
+apps/backend/**/data/
+coverage/
+.env
+.env.*.local
