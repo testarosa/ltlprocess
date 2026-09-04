@@ -21,10 +21,23 @@ const input: QuoteRequestInput = {
     hazmat: false,
     stackable: false
   },
+  additionalDimensions: [{
+    handlingUnit: "Crate",
+    length: 36,
+    width: 30,
+    height: 24,
+    dimensionUnit: "in",
+    quantity: 1,
+    weight: 100,
+    weightUnit: "kg",
+    freightClass: "85",
+    hazmat: false,
+    stackable: true
+  }],
   specialServices: {
-    general: [],
-    pickup: ["Liftgate Pickup"],
-    delivery: ["Delivery Appointment"],
+    general: ["Notification", "Guaranteed Service", "HazMat"],
+    pickup: ["CFS Pickup", "Liftgate Pickup"],
+    delivery: ["Delivery Appointment", "Residential Delivery"],
     overLength: []
   }
 };
@@ -74,9 +87,22 @@ async function main() {
     assert.equal(new Headers(capturedInit?.headers).get("X-API-KEY"), "test-key");
     const body = JSON.parse(String(capturedInit?.body)) as Record<string, any>;
     assert.equal(body.customerId, 42);
-    assert.equal(body.items[0].totalWeight, 550);
+    assert.equal(body.items[0].totalWeight, 275);
     assert.equal(body.items[0].packagingType, "Pallet");
-    assert.deepEqual(body.accessorialServices, [{ code: "LGPU" }, { code: "APPT" }]);
+    assert.equal(body.items.length, 2);
+    assert.equal(body.items[1].packagingType, "Crate");
+    assert.equal(body.items[1].totalWeight, 220.46);
+    assert.equal(body.items[1].isStackable, true);
+    assert.deepEqual(body.accessorialServices, [
+      { code: "NOTIFY" },
+      { code: "GUR" },
+      { code: "HAZM" },
+      { code: "LTDPU" },
+      { code: "LGPU" },
+      { code: "APPT" },
+      { code: "RESDEL" }
+    ]);
+    assert.equal(body.items[0].isHazardous, true);
     assert.equal(result.length, 2);
     assert.equal(result[0].rateAmount, 235.89);
     assert.equal(result[0].transitDays, 4);

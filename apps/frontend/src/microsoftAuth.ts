@@ -12,7 +12,11 @@ const apiScope = String(
   import.meta.env.VITE_ENTRA_API_SCOPE ?? (clientId ? `api://${clientId}/access_as_user` : "")
 ).trim();
 
-export const isMicrosoftAuthConfigured = Boolean(clientId && tenantId && apiScope);
+// MSAL requires Web Crypto, which browsers expose only in a secure context
+// (HTTPS or loopback localhost). A temporary HTTP deployment by IP should
+// fall back to development authentication instead of crashing at startup.
+const canUseBrowserCrypto = window.isSecureContext && Boolean(window.crypto?.subtle);
+export const isMicrosoftAuthConfigured = Boolean(clientId && tenantId && apiScope && canUseBrowserCrypto);
 
 const msal = isMicrosoftAuthConfigured
   ? new PublicClientApplication({
@@ -60,7 +64,7 @@ function toSession(result: AuthenticationResult): AuthSession {
 export function signInWithMicrosoft(overrideInteractionInProgress = false): Promise<AuthSession> {
   if (signInPromise) return signInPromise;
 
-  signInPromise = (async () => {
+  const pendingSignIn = (async () => {
     const client = await initializeMicrosoftAuth();
     if (overrideInteractionInProgress) {
       // A popup can return after its one-time PKCE request has been lost (for
@@ -76,10 +80,21 @@ export function signInWithMicrosoft(overrideInteractionInProgress = false): Prom
     client.setActiveAccount(result.account);
     return toSession(result);
   })().finally(() => {
-    signInPromise = null;
+    // Do not let an abandoned popup clear a newer sign-in attempt.
+    if (signInPromise === pendingSignIn) signInPromise = null;
   });
 
+  signInPromise = pendingSignIn;
   return signInPromise;
+}
+
+export async function abandonMicrosoftSignIn(): Promise<void> {
+  // MSAL normally rejects loginPopup when its window closes. Some embedded
+  // browsers do not deliver that close signal, so release the unresolved
+  // promise and remove its stale interaction state before another attempt.
+  signInPromise = null;
+  const client = await initializeMicrosoftAuth();
+  await client.clearCache();
 }
 
 export async function getMicrosoftAccessToken(fallbackToken: string): Promise<string> {
@@ -105,6 +120,10 @@ export async function signOutFromMicrosoft(): Promise<void> {
   const client = await initializeMicrosoftAuth();
   const account = client.getActiveAccount();
   if (account) {
-    await client.logoutPopup({ account, postLogoutRedirectUri: `${window.location.origin}/login` });
+    await client.logoutPopup({
+      account,
+      postLogoutRedirectUri: `${window.location.origin}/auth-redirect.html`,
+      mainWindowRedirectUri: `${window.location.origin}/login`
+    });
   }
 }

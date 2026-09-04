@@ -1,4 +1,4 @@
-import type { QuoteRequestInput } from "@tms/shared";
+import { getQuoteDimensions, type QuoteDimensionInput, type QuoteRequestInput } from "@tms/shared";
 import type { CarrierAdapter, IdentifiedCarrierQuoteOutcome } from "./carriers.js";
 import type { PriorityOneApiConfig } from "./config.js";
 
@@ -28,9 +28,46 @@ interface PriorityOneRateResponse {
 }
 
 const documentedAccessorialMap: Record<string, string> = {
+  HazMat: "HAZM",
+  Notification: "NOTIFY",
+  "Guaranteed Service": "GUR",
+  "CFS Pickup": "LTDPU",
+  "Airport Pickup": "AIRPU",
+  "Inside Pickup": "INPU",
   "Liftgate Pickup": "LGPU",
-  "Pickup Appointment": "APPT",
-  "Delivery Appointment": "APPT"
+  "Residential Pickup": "RESPU",
+  "Construction Site Pickup": "CONPU",
+  "Church Pickup": "CHRCPU",
+  "Hospital Pickup": "HOSPU",
+  "Hotel Pickup": "HOTLPU",
+  "Resort Pickup": "LTDPU",
+  "School Pickup": "LTDPU",
+  "Military Base Pickup": "GOVPU",
+  "Prison Pickup": "PRISPU",
+  "Country Club Pickup": "CLUBPU",
+  "Farm Pickup": "LTDPU",
+  "Ranch Pickup": "LTDPU",
+  "Camp Pickup": "CAMPPU",
+  "Park Pickup": "LTDPU",
+  "Inside Delivery": "INDEL",
+  "Liftgate Delivery": "LGDEL",
+  "Delivery Appointment": "APPT",
+  "Residential Delivery": "RESDEL",
+  "Construction Site Delivery": "CONDEL",
+  "Church Delivery": "CHRCDEL",
+  "Hospital Delivery": "HOSDEL",
+  "Hotel Delivery": "HOTLDEL",
+  "Resort Delivery": "LTDDEL",
+  "School Delivery": "LTDDEL",
+  "Military Base Delivery": "LTDDEL",
+  "Prison Delivery": "PRISDEL",
+  "Country Club Delivery": "CLUBDEL",
+  "CFS Delivery": "CFSDEL",
+  "Farm Delivery": "LTDDEL",
+  "Ranch Delivery": "LTDDEL",
+  "Camp Delivery": "CAMPDEL",
+  "Park Delivery": "LTDDEL",
+  "Protect from Freeze": "PFZ"
 };
 
 function numberOrNull(value: unknown): number | null {
@@ -39,19 +76,19 @@ function numberOrNull(value: unknown): number | null {
   return null;
 }
 
-function dimensionsInInches(input: QuoteRequestInput): { length: number; width: number; height: number } {
-  const unit = input.dimensions.dimensionUnit.toLowerCase();
+function dimensionsInInches(dimension: QuoteDimensionInput): { length: number; width: number; height: number } {
+  const unit = dimension.dimensionUnit.toLowerCase();
   const multiplier = unit === "ft" ? 12 : unit === "cm" ? 0.393701 : 1;
   return {
-    length: Math.round(input.dimensions.length * multiplier * 100) / 100,
-    width: Math.round(input.dimensions.width * multiplier * 100) / 100,
-    height: Math.round(input.dimensions.height * multiplier * 100) / 100
+    length: Math.round(dimension.length * multiplier * 100) / 100,
+    width: Math.round(dimension.width * multiplier * 100) / 100,
+    height: Math.round(dimension.height * multiplier * 100) / 100
   };
 }
 
-function totalWeightInPounds(input: QuoteRequestInput): number {
-  const multiplier = input.dimensions.weightUnit.toLowerCase() === "kg" ? 2.20462 : 1;
-  return Math.round(input.dimensions.weight * input.dimensions.quantity * multiplier * 100) / 100;
+function weightInPounds(dimension: QuoteDimensionInput): number {
+  const multiplier = dimension.weightUnit.toLowerCase() === "kg" ? 2.20462 : 1;
+  return Math.round(dimension.weight * multiplier * 100) / 100;
 }
 
 function normalizePackaging(value: string): string {
@@ -82,7 +119,7 @@ function normalizePackaging(value: string): string {
 
 function allSelectedServices(input: QuoteRequestInput): string[] {
   return [
-    ...input.specialServices.general.filter((item) => item !== "HazMat"),
+    ...input.specialServices.general,
     ...input.specialServices.pickup,
     ...input.specialServices.delivery
   ];
@@ -130,7 +167,6 @@ export class PriorityOneAdapter implements CarrierAdapter {
   }
 
   private buildRequest(input: QuoteRequestInput): Record<string, unknown> {
-    const dimensions = dimensionsInInches(input);
     const accessorialMap = { ...documentedAccessorialMap, ...this.config.accessorialMap };
     const codes = [...new Set(allSelectedServices(input).map((service) => accessorialMap[service]).filter(Boolean))];
     return {
@@ -144,23 +180,21 @@ export class PriorityOneAdapter implements CarrierAdapter {
       destinationZipCode: input.deliveryLocation.zipCode,
       destinationCountryCode: input.deliveryLocation.country.toUpperCase(),
       pickupDate: `${input.requestedDate}T00:00:00`,
-      items: [
-        {
-          freightClass: input.dimensions.freightClass,
-          packagingType: normalizePackaging(input.dimensions.handlingUnit),
-          units: input.dimensions.quantity,
-          pieces: input.dimensions.quantity,
-          totalWeight: totalWeightInPounds(input),
-          ...dimensions,
-          isStackable: input.dimensions.stackable,
-          isHazardous: input.dimensions.hazmat || input.specialServices.general.includes("HazMat"),
+      items: getQuoteDimensions(input).map((dimension) => ({
+          freightClass: dimension.freightClass,
+          packagingType: normalizePackaging(dimension.handlingUnit),
+          units: dimension.quantity,
+          pieces: dimension.quantity,
+          totalWeight: weightInPounds(dimension),
+          ...dimensionsInInches(dimension),
+          isStackable: dimension.stackable,
+          isHazardous: dimension.hazmat || input.specialServices.general.includes("HazMat"),
           isUsed: false,
           isMachinery: false,
           nmfcItemCode: null,
           nmfcSubCode: null,
           description: input.commodity || null
-        }
-      ],
+        })),
       accessorialServices: codes.map((code) => ({ code })),
       apiConfiguration: { timeout: Math.max(1, Math.round(this.config.timeoutMs / 1000)) }
     };

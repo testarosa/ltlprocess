@@ -7,4 +7,8 @@ dist/
 apps/backend/**/data/
 coverage/
 .env
+.env.local
 .env.*.local
+.codex-run/
+artifacts/
+tmp/

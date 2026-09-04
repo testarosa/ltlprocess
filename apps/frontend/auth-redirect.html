@@ -10,7 +10,7 @@
     <script type="module">
       import { broadcastResponseToMainFrame } from "@azure/msal-browser/redirect-bridge";
 
-      broadcastResponseToMainFrame();
+      broadcastResponseToMainFrame().finally(() => window.close());
     </script>
   </body>
 </html>

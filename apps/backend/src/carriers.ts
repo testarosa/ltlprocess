@@ -1,7 +1,10 @@
 import crypto from "node:crypto";
-import type { QuoteRequestInput, CarrierQuoteStatus } from "@tms/shared";
-import type { CarrierApiConfig, PriorityOneApiConfig, ThreePlSystemsApiConfig } from "./config.js";
+import { getQuoteDimensions, type QuoteDimensionInput, type QuoteRequestInput, type CarrierQuoteStatus } from "@tms/shared";
+import type { CarrierApiConfig, ForwardAirApiConfig, PriorityOneApiConfig, RoadrunnerApiConfig, ThreePlSystemsApiConfig, WwexApiConfig } from "./config.js";
+import { ForwardAirAdapter } from "./forwardair.js";
 import { PriorityOneAdapter } from "./priority1.js";
+import { RoadrunnerAdapter } from "./roadrunner.js";
+import { WwexAdapter } from "./wwex.js";
 
 export interface CarrierQuoteOutcome {
   status: CarrierQuoteStatus;
@@ -37,8 +40,58 @@ interface ThreePlRateResponse {
   rateQuoteId?: unknown;
   serviceType?: unknown;
   serviceDescription?: unknown;
+  isGuaranteed?: unknown;
+  guaranteed?: unknown;
+  billTo?: unknown;
   [key: string]: unknown;
 }
+
+interface IndexedThreePlRate {
+  item: unknown;
+  index: number;
+}
+
+const threePlAccessorialCodes: Record<string, string> = {
+  Notification: "NOTY",
+  "Guaranteed Service": "GUAR",
+  "CFS Pickup": "CFSP",
+  "Airport Pickup": "AIPK",
+  "Inside Pickup": "INPK",
+  "Liftgate Pickup": "LGPK",
+  "Residential Pickup": "RSPK",
+  "Construction Site Pickup": "CSPK",
+  "Church Pickup": "PWPK",
+  "Hospital Pickup": "LIPK",
+  "Hotel Pickup": "HOPK",
+  "Resort Pickup": "LIPK",
+  "School Pickup": "SCPK",
+  "Military Base Pickup": "MIPK",
+  "Prison Pickup": "LIPK",
+  "Country Club Pickup": "COCP",
+  "Farm Pickup": "FAPK",
+  "Ranch Pickup": "LIPK",
+  "Camp Pickup": "CAPK",
+  "Park Pickup": "FMPK",
+  "Inside Delivery": "INDE",
+  "Liftgate Delivery": "LGDE",
+  "Delivery Appointment": "APTD",
+  "Residential Delivery": "RSDE",
+  "Construction Site Delivery": "CSDE",
+  "Church Delivery": "PWDE",
+  "Hospital Delivery": "LIDE",
+  "Hotel Delivery": "HODE",
+  "Resort Delivery": "LIDE",
+  "Military Base Delivery": "MIDE",
+  "Prison Delivery": "LIDE",
+  "Country Club Delivery": "COCD",
+  "CFS Delivery": "CFSD",
+  "Farm Delivery": "FADE",
+  "Ranch Delivery": "LIDE",
+  "Camp Delivery": "CADE",
+  "Park Delivery": "FMDE",
+  "Protect from Freeze": "PRFR",
+  "Excessive Length": "EXLG"
+};
 
 interface ThreePlAccessorial {
   code: string;
@@ -98,26 +151,41 @@ function normalizePackaging(value: string): string {
   return packaging[value.trim().toLowerCase()] ?? (value.trim() || "Pallets");
 }
 
-function dimensionsInInches(input: QuoteRequestInput): { length: number; width: number; height: number } {
-  const unit = input.dimensions.dimensionUnit.toLowerCase();
+function dimensionsInInches(dimension: QuoteDimensionInput): { length: number; width: number; height: number } {
+  const unit = dimension.dimensionUnit.toLowerCase();
   const multiplier = unit === "ft" ? 12 : unit === "cm" ? 0.393701 : 1;
   return {
-    length: Math.round(input.dimensions.length * multiplier * 100) / 100,
-    width: Math.round(input.dimensions.width * multiplier * 100) / 100,
-    height: Math.round(input.dimensions.height * multiplier * 100) / 100
+    length: Math.round(dimension.length * multiplier * 100) / 100,
+    width: Math.round(dimension.width * multiplier * 100) / 100,
+    height: Math.round(dimension.height * multiplier * 100) / 100
   };
 }
 
+function weightInPounds(dimension: QuoteDimensionInput): number {
+  const multiplier = dimension.weightUnit.toLowerCase() === "kg" ? 2.20462 : 1;
+  return Math.round(dimension.weight * multiplier * 100) / 100;
+}
+
 function totalWeightInPounds(input: QuoteRequestInput): number {
-  const multiplier = input.dimensions.weightUnit.toLowerCase() === "kg" ? 2.20462 : 1;
-  return Math.round(input.dimensions.weight * input.dimensions.quantity * multiplier * 100) / 100;
+  return Math.round(getQuoteDimensions(input).reduce((total, dimension) => total + weightInPounds(dimension), 0) * 100) / 100;
 }
 
 function normalizeText(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-class ThreePlSystemsAdapter implements CarrierAdapter {
+function isThreePlGuaranteedRate(value: ThreePlRateResponse): boolean {
+  if (value.isGuaranteed === true || value.guaranteed === true) return true;
+
+  const serviceText = [value.serviceType, value.serviceDescription]
+    .filter((part): part is string => typeof part === "string")
+    .join(" ")
+    .toLowerCase();
+
+  return /\bguarantee(?:d)?\b|\bguar\b|\bgur\b|\btime critical\b/.test(serviceText);
+}
+
+export class ThreePlSystemsAdapter implements CarrierAdapter {
   readonly key = "3pl-systems";
   readonly name = "3PL Systems";
   private token: { value: string; expiresAt: number } | null = null;
@@ -132,7 +200,7 @@ class ThreePlSystemsAdapter implements CarrierAdapter {
     try {
       const token = await this.getToken(controller.signal);
       const accessorialCodes = await this.resolveAccessorialCodes(input, token, controller.signal);
-      const response = await fetch(`${this.config.baseUrl}/api/v1/rating`, {
+      const response = await fetch(`${this.config.baseUrl}/api/v1/RatingWithRateQuoteIdAndBillTo`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -150,7 +218,7 @@ class ThreePlSystemsAdapter implements CarrierAdapter {
         throw new Error("3PL Systems returned an invalid rating response.");
       }
 
-      return payload.map((item, index) => this.normalizeRate(item, index));
+      return this.selectPreferredRates(payload).map(({ item, index }) => this.normalizeRate(item, index));
     } finally {
       clearTimeout(timeout);
     }
@@ -186,34 +254,31 @@ class ThreePlSystemsAdapter implements CarrierAdapter {
   }
 
   private buildRatingRequest(input: QuoteRequestInput, accessorials: string[]): Record<string, unknown> {
-    const dimensions = dimensionsInInches(input);
     return {
       consigneeZip: input.deliveryLocation.zipCode,
       shipmentMode: "LTL",
       shipperZip: input.pickupLocation.zipCode,
-      miles: 0,
+      miles: "0",
       shipperCountry: normalizeCountry(input.pickupLocation.country),
       consigneeCountry: normalizeCountry(input.deliveryLocation.country),
       equipmentType: "StraightVan",
       accessorials,
-      items: [
-        {
-          class: input.dimensions.freightClass,
-          isHazardous: input.dimensions.hazmat || input.specialServices.general.includes("HazMat"),
-          pieces: input.dimensions.quantity,
-          weight: totalWeightInPounds(input),
-          packaging: normalizePackaging(input.dimensions.handlingUnit),
+      items: getQuoteDimensions(input).map((dimension) => ({
+          class: dimension.freightClass,
+          isHazardous: dimension.hazmat || input.specialServices.general.includes("HazMat"),
+          pieces: dimension.quantity,
+          weight: weightInPounds(dimension),
+          packaging: normalizePackaging(dimension.handlingUnit),
           nmfc: 0,
           productDescription: input.commodity,
-          density: 0,
-          ...dimensions,
+          density: "0",
+          ...dimensionsInInches(dimension),
           billed: 0,
           cost: 0,
-          unitsWeight: "lb",
-          unitsDensity: "lb/ft3",
-          unitsDimension: "in"
-        }
-      ]
+          unitsWeight: "0",
+          unitsDensity: "0",
+          unitsDimension: "0"
+        }))
     };
   }
 
@@ -221,17 +286,22 @@ class ThreePlSystemsAdapter implements CarrierAdapter {
     const requested = [
       ...input.specialServices.general.filter((item) => item !== "HazMat"),
       ...input.specialServices.pickup,
-      ...input.specialServices.delivery
+      ...input.specialServices.delivery,
+      ...(input.specialServices.overLength.length > 0 ? ["Excessive Length"] : [])
     ];
     if (requested.length === 0) return [];
 
+    let byDescription = new Map<string, string>();
     try {
       const available = await this.getAccessorials(token, signal);
-      const byDescription = new Map(available.map((item) => [normalizeText(item.description), item.code]));
-      return [...new Set(requested.map((item) => byDescription.get(normalizeText(item))).filter((code): code is string => Boolean(code)))];
+      byDescription = new Map(available.map((item) => [normalizeText(item.description), item.code]));
     } catch {
-      return [];
+      // The documented codes below are sufficient when the accessorial catalog is unavailable.
     }
+
+    return [...new Set(requested
+      .map((item) => threePlAccessorialCodes[item] ?? byDescription.get(normalizeText(item)))
+      .filter((code): code is string => Boolean(code)))];
   }
 
   private async getAccessorials(token: string, signal: AbortSignal): Promise<ThreePlAccessorial[]> {
@@ -253,6 +323,40 @@ class ThreePlSystemsAdapter implements CarrierAdapter {
     });
     this.accessorials = { value, expiresAt: Date.now() + 24 * 60 * 60 * 1000 };
     return value;
+  }
+
+  private selectPreferredRates(payload: unknown[]): IndexedThreePlRate[] {
+    const preferred = new Map<string, IndexedThreePlRate>();
+
+    payload.forEach((item, index) => {
+      const value = (item && typeof item === "object" ? item : {}) as ThreePlRateResponse;
+      const scac = typeof value.scac === "string" ? value.scac.trim().toLowerCase() : "";
+
+      // 3PL Systems can return tariff and dynamic prices for the same carrier.
+      // Collapse every non-guaranteed SCAC rate into one bucket and retain the
+      // cheapest. Guaranteed service remains a separate selectable quote.
+      // Broker/house rates do not have a SCAC, so they must never be deduplicated.
+      const key = scac
+        ? `${scac}:${isThreePlGuaranteedRate(value) ? "guaranteed" : "regular"}`
+        : `house-rate:${index}`;
+      const existing = preferred.get(key);
+      const billed = numberOrNull(value.billed);
+      const existingValue = (existing?.item && typeof existing.item === "object" ? existing.item : {}) as ThreePlRateResponse;
+      const existingBilled = numberOrNull(existingValue.billed);
+
+      if (!existing || (billed !== null && (existingBilled === null || billed < existingBilled))) {
+        preferred.set(key, { item, index });
+      }
+    });
+
+    return [...preferred.values()].sort((left, right) => {
+      const leftValue = (left.item && typeof left.item === "object" ? left.item : {}) as ThreePlRateResponse;
+      const rightValue = (right.item && typeof right.item === "object" ? right.item : {}) as ThreePlRateResponse;
+      const leftRank = isThreePlGuaranteedRate(leftValue) ? 1 : 0;
+      const rightRank = isThreePlGuaranteedRate(rightValue) ? 1 : 0;
+      return leftRank - rightRank
+        || (numberOrNull(leftValue.billed) ?? Number.POSITIVE_INFINITY) - (numberOrNull(rightValue.billed) ?? Number.POSITIVE_INFINITY);
+    });
   }
 
   private normalizeRate(remote: unknown, index: number): IdentifiedCarrierQuoteOutcome {
@@ -342,10 +446,18 @@ class HttpCarrierAdapter implements CarrierAdapter {
 export function createCarrierAdapters(
   configs: CarrierApiConfig[],
   threePlConfig?: ThreePlSystemsApiConfig,
-  priorityOneConfig?: PriorityOneApiConfig
+  priorityOneConfig?: PriorityOneApiConfig,
+  roadrunnerConfig?: RoadrunnerApiConfig,
+  wwexConfig?: WwexApiConfig,
+  forwardAirConfig?: ForwardAirApiConfig
 ): CarrierAdapter[] {
   const liveAdapters: CarrierAdapter[] = [];
   if (threePlConfig?.clientId && threePlConfig.clientSecret) liveAdapters.push(new ThreePlSystemsAdapter(threePlConfig));
   if (priorityOneConfig?.apiKey) liveAdapters.push(new PriorityOneAdapter(priorityOneConfig));
+  if (roadrunnerConfig?.applicationId && roadrunnerConfig.apiKey) liveAdapters.push(new RoadrunnerAdapter(roadrunnerConfig));
+  if (wwexConfig?.clientId && wwexConfig.clientSecret) liveAdapters.push(new WwexAdapter(wwexConfig));
+  if (forwardAirConfig?.user && forwardAirConfig.password && forwardAirConfig.customerId && forwardAirConfig.billToNumber) {
+    liveAdapters.push(new ForwardAirAdapter(forwardAirConfig));
+  }
   return liveAdapters.length > 0 ? liveAdapters : configs.map((item) => new HttpCarrierAdapter(item));
 }

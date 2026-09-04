@@ -1,7 +1,9 @@
-import type { AuthSession, CreateQuoteResponse, QuoteRequestInput, QuoteRequestRecord, QuoteSummary } from "@tms/shared";
+import type { AuthSession, CreateQuoteResponse, LocationLookup, QuoteRequestInput, QuoteRequestRecord, QuoteSummary } from "@tms/shared";
 import { getMicrosoftAccessToken } from "./microsoftAuth";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4000";
+// Production uses the same IIS origin and proxies /api to the loopback-only
+// backend. Local development overrides this in the root .env file.
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
 async function request<T>(path: string, init: RequestInit = {}, token?: string): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -45,4 +47,8 @@ export async function fetchQuote(id: string, token: string): Promise<QuoteReques
 
 export async function fetchQuoteHistory(token: string): Promise<QuoteSummary[]> {
   return request<QuoteSummary[]>("/api/quotes", {}, await getMicrosoftAccessToken(token));
+}
+
+export function fetchLocationByZipCode(zipCode: string): Promise<LocationLookup> {
+  return request<LocationLookup>(`/api/locations/${encodeURIComponent(zipCode)}`);
 }

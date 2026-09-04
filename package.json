@@ -12,6 +12,7 @@
     "dev:frontend": "npm run dev --workspace @tms/frontend",
     "build": "npm run build --workspace @tms/shared && npm run build --workspace @tms/backend && npm run build --workspace @tms/frontend",
     "test": "npm run test --workspace @tms/backend",
+    "migrate:sqlite": "npm run build --workspace @tms/backend && node apps/backend/dist/migrate-sqlite.js",
     "verify:backend": "npm run verify:start --workspace @tms/backend"
   },
   "devDependencies": {

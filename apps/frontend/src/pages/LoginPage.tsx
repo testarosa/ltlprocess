@@ -1,7 +1,7 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { login } from "../api";
-import { isMicrosoftAuthConfigured, signInWithMicrosoft } from "../microsoftAuth";
+import { abandonMicrosoftSignIn, isMicrosoftAuthConfigured, signInWithMicrosoft } from "../microsoftAuth";
 import { useAuth } from "../state";
 
 export function LoginPage() {
@@ -11,7 +11,50 @@ export function LoginPage() {
   const [accessCode, setAccessCode] = useState("letmein");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [canRetryMicrosoft, setCanRetryMicrosoft] = useState(false);
+  const [resetMicrosoftOnNextAttempt, setResetMicrosoftOnNextAttempt] = useState(false);
+  const microsoftSignInActive = useRef(false);
+  const microsoftPopupTookFocus = useRef(false);
+  const microsoftAttempt = useRef(0);
+
+  useEffect(() => {
+    let focusTimer: number | undefined;
+    const handleBlur = () => {
+      if (microsoftSignInActive.current) microsoftPopupTookFocus.current = true;
+    };
+    const handleFocus = () => {
+      if (!microsoftSignInActive.current || !microsoftPopupTookFocus.current) return;
+      window.clearTimeout(focusTimer);
+      focusTimer = window.setTimeout(() => {
+        // Give a successful MSAL response time to settle first. If it is still
+        // pending after focus returns, the popup was closed without a callback.
+        if (!microsoftSignInActive.current || !document.hasFocus()) return;
+        microsoftSignInActive.current = false;
+        microsoftPopupTookFocus.current = false;
+        microsoftAttempt.current += 1;
+        setSubmitting(false);
+        setResetMicrosoftOnNextAttempt(false);
+        setError("");
+        void abandonMicrosoftSignIn().catch(() => undefined);
+      }, 1500);
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        handleBlur();
+      } else {
+        handleFocus();
+      }
+    };
+
+    window.addEventListener("blur", handleBlur);
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.clearTimeout(focusTimer);
+      window.removeEventListener("blur", handleBlur);
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
 
   if (session) {
     return <Navigate to="/" replace />;
@@ -34,30 +77,45 @@ export function LoginPage() {
   }
 
   async function handleMicrosoftSignIn() {
+    const attempt = ++microsoftAttempt.current;
+    microsoftSignInActive.current = true;
+    microsoftPopupTookFocus.current = false;
     setError("");
     setSubmitting(true);
     try {
-      const nextSession = await signInWithMicrosoft(canRetryMicrosoft);
-      setCanRetryMicrosoft(false);
+      const nextSession = await signInWithMicrosoft(resetMicrosoftOnNextAttempt);
+      if (attempt !== microsoftAttempt.current) return;
+      microsoftSignInActive.current = false;
+      setResetMicrosoftOnNextAttempt(false);
       setSession(nextSession);
       navigate("/", { replace: true });
     } catch (nextError) {
+      if (attempt !== microsoftAttempt.current) return;
+      microsoftSignInActive.current = false;
       const errorCode = typeof nextError === "object" && nextError && "errorCode" in nextError
         ? String(nextError.errorCode)
         : "";
-      if (errorCode === "interaction_in_progress" || errorCode === "no_token_request_cache_error") {
-        setCanRetryMicrosoft(true);
+      if (errorCode === "user_cancelled" || errorCode === "interaction_in_progress_cancelled") {
+        // Closing the account picker is a normal cancellation. Restore the
+        // initial sign-in state without showing an error or a retry variant.
+        setResetMicrosoftOnNextAttempt(false);
+        setError("");
+      } else if (errorCode === "interaction_in_progress" || errorCode === "no_token_request_cache_error") {
+        setResetMicrosoftOnNextAttempt(true);
         setError(
           errorCode === "interaction_in_progress"
-            ? "A previous Microsoft sign-in is still pending. Select Retry to cancel it and start again."
-            : "Microsoft sign-in was interrupted and its temporary request expired. Select Retry to start a fresh sign-in."
+            ? "A previous Microsoft sign-in is still pending. Select Sign in with Microsoft 365 to cancel it and start again."
+            : "Microsoft sign-in was interrupted and its temporary request expired. Select Sign in with Microsoft 365 to start again."
         );
       } else {
-        setCanRetryMicrosoft(false);
+        setResetMicrosoftOnNextAttempt(false);
         setError(nextError instanceof Error ? nextError.message : "Microsoft sign-in failed.");
       }
     } finally {
-      setSubmitting(false);
+      if (attempt === microsoftAttempt.current) {
+        microsoftSignInActive.current = false;
+        setSubmitting(false);
+      }
     }
   }
 
@@ -88,7 +146,7 @@ export function LoginPage() {
             {isMicrosoftAuthConfigured ? (
               <button className="microsoft-signin" type="button" disabled={submitting} onClick={() => void handleMicrosoftSignIn()}>
                 <span className="microsoft-mark" aria-hidden="true"><i /><i /><i /><i /></span>
-                {submitting ? "Connecting to Microsoft..." : canRetryMicrosoft ? "Retry Microsoft sign-in" : "Sign in with Microsoft 365"}
+                {submitting ? "Connecting to Microsoft..." : "Sign in with Microsoft 365"}
               </button>
             ) : (
               <>

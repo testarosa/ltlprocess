@@ -1,11 +1,8 @@
-import type { QuoteStatus, QuoteRequestInput } from "@tms/shared";
+import { getQuoteDimensions, type QuoteStatus, type QuoteRequestInput } from "@tms/shared";
 import type { CarrierAdapter } from "./carriers.js";
 import {
-  createQuoteRequest,
-  getQuoteRequestById,
-  replaceCarrierQuotes,
-  updateCarrierQuote,
-  updateQuoteStatus
+  sqlQuoteRepository,
+  type QuoteRepository
 } from "./repository.js";
 
 function validateQuoteRequest(input: QuoteRequestInput): string[] {
@@ -19,11 +16,14 @@ function validateQuoteRequest(input: QuoteRequestInput): string[] {
   if (!input.deliveryLocation.zipCode.trim()) errors.push("Delivery zip code is required.");
   if (!input.deliveryLocation.city.trim()) errors.push("Delivery city is required.");
   if (!input.deliveryLocation.state.trim()) errors.push("Delivery state is required.");
-  if (!Number.isFinite(input.dimensions.length) || input.dimensions.length <= 0) errors.push("Length must be greater than zero.");
-  if (!Number.isFinite(input.dimensions.width) || input.dimensions.width <= 0) errors.push("Width must be greater than zero.");
-  if (!Number.isFinite(input.dimensions.height) || input.dimensions.height <= 0) errors.push("Height must be greater than zero.");
-  if (!Number.isFinite(input.dimensions.quantity) || input.dimensions.quantity <= 0) errors.push("Quantity must be greater than zero.");
-  if (!Number.isFinite(input.dimensions.weight) || input.dimensions.weight <= 0) errors.push("Weight must be greater than zero.");
+  getQuoteDimensions(input).forEach((dimension, index) => {
+    const prefix = `Dimension ${index + 1}: `;
+    if (!Number.isFinite(dimension.length) || dimension.length <= 0) errors.push(`${prefix}length must be greater than zero.`);
+    if (!Number.isFinite(dimension.width) || dimension.width <= 0) errors.push(`${prefix}width must be greater than zero.`);
+    if (!Number.isFinite(dimension.height) || dimension.height <= 0) errors.push(`${prefix}height must be greater than zero.`);
+    if (!Number.isFinite(dimension.quantity) || dimension.quantity <= 0) errors.push(`${prefix}quantity must be greater than zero.`);
+    if (!Number.isFinite(dimension.weight) || dimension.weight <= 0) errors.push(`${prefix}weight must be greater than zero.`);
+  });
   return errors;
 }
 
@@ -47,22 +47,31 @@ function summarizeQuoteStatus(statuses: Array<"pending" | "success" | "unavailab
 }
 
 export class QuoteService {
-  constructor(private readonly carriers: CarrierAdapter[]) {}
+  constructor(
+    private readonly carriers: CarrierAdapter[],
+    private readonly repository: QuoteRepository = sqlQuoteRepository,
+    private readonly startBackgroundProcessing = true
+  ) {}
 
-  submitQuoteRequest(operatorName: string, input: QuoteRequestInput): { id: string; errors: string[] } {
+  async submitQuoteRequest(operatorName: string, input: QuoteRequestInput): Promise<{ id: string; errors: string[] }> {
     const errors = validateQuoteRequest(input);
     if (errors.length > 0) {
       return { id: "", errors };
     }
 
-    const id = createQuoteRequest(operatorName, input, this.carriers);
-    void this.processQuoteRequest(id);
+    const id = await this.repository.createQuoteRequest(operatorName, input, this.carriers);
+    if (this.startBackgroundProcessing) {
+      void this.processQuoteRequest(id).catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : "Unknown quote processing error";
+        console.error(`[quotes] Background processing failed for ${id}: ${detail}`);
+      });
+    }
 
     return { id, errors: [] };
   }
 
   async processQuoteRequest(quoteRequestId: string): Promise<void> {
-    const quoteRequest = getQuoteRequestById(quoteRequestId);
+    const quoteRequest = await this.repository.getQuoteRequestById(quoteRequestId);
     if (!quoteRequest) {
       return;
     }
@@ -82,13 +91,13 @@ export class QuoteService {
                 rawResponse: "[]",
                 errorMessage: "No carrier rates were returned."
               };
-              updateCarrierQuote(quoteRequestId, carrier.key, unavailable);
+              await this.repository.updateCarrierQuote(quoteRequestId, carrier.key, unavailable);
               return [unavailable.status];
             }
-            replaceCarrierQuotes(quoteRequestId, carrier.key, result);
+            await this.repository.replaceCarrierQuotes(quoteRequestId, carrier.key, result);
             return result.map((item) => item.status);
           }
-          updateCarrierQuote(quoteRequestId, carrier.key, result);
+          await this.repository.updateCarrierQuote(quoteRequestId, carrier.key, result);
           return [result.status];
         } catch (error) {
           const failed = {
@@ -100,12 +109,12 @@ export class QuoteService {
             rawResponse: null,
             errorMessage: error instanceof Error ? error.message : "Carrier request failed."
           };
-          updateCarrierQuote(quoteRequestId, carrier.key, failed);
+          await this.repository.updateCarrierQuote(quoteRequestId, carrier.key, failed);
           return [failed.status];
         }
       })
     );
 
-    updateQuoteStatus(quoteRequestId, summarizeQuoteStatus(resultGroups.flat()));
+    await this.repository.updateQuoteStatus(quoteRequestId, summarizeQuoteStatus(resultGroups.flat()));
   }
 }

@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
+import sql from "mssql/msnodesqlv8.js";
 import type { QuoteRequestInput, QuoteStatus } from "@tms/shared";
-import { db } from "./db.js";
+import { getSqlPool } from "./db.js";
 
 interface SeedQuote {
   id: string;
@@ -211,73 +212,69 @@ function formatLocationSummary(location: QuoteRequestInput["pickupLocation"]): s
 }
 
 function toWeightLbs(input: QuoteRequestInput): number {
-  const total = input.dimensions.weight * input.dimensions.quantity;
-  return input.dimensions.weightUnit.toLowerCase() === "kg" ? Math.round(total * 2.20462 * 100) / 100 : total;
+  const totalWeight = input.dimensions.weight;
+  return input.dimensions.weightUnit.toLowerCase() === "kg" ? Math.round(totalWeight * 2.20462 * 100) / 100 : totalWeight;
 }
 
-export function seedDemoData(): void {
-  const existing = db.prepare("SELECT COUNT(*) AS count FROM quote_requests").get() as { count: number };
-  if (existing.count > 0) {
-    return;
-  }
+export async function seedDemoData(): Promise<void> {
+  const pool = await getSqlPool();
+  const existing = await pool.request().query<{ count: number }>("SELECT COUNT_BIG(*) AS count FROM dbo.quote_requests;");
+  if (Number(existing.recordset[0]?.count ?? 0) > 0) return;
 
-  const insertQuote = db.prepare(`
-    INSERT INTO quote_requests (
-      id, operator_name, origin, destination, shipment_date, weight_lbs, request_payload, status, created_at, updated_at
-    ) VALUES (
-      @id, @operator_name, @origin, @destination, @shipment_date, @weight_lbs, @request_payload, @status, @created_at, @updated_at
-    )
-  `);
-
-  const insertCarrierQuote = db.prepare(`
-    INSERT INTO carrier_quotes (
-      id, quote_request_id, carrier_key, carrier_name, status, rate_amount, currency, service_level, transit_days,
-      raw_response, error_message, requested_at, responded_at, updated_at
-    ) VALUES (
-      @id, @quote_request_id, @carrier_key, @carrier_name, @status, @rate_amount, @currency, @service_level, @transit_days,
-      @raw_response, @error_message, @requested_at, @responded_at, @updated_at
-    )
-  `);
-
-  db.exec("BEGIN");
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin();
   try {
     for (const quote of demoQuotes) {
-      insertQuote.run({
-        id: quote.id,
-        operator_name: quote.operatorName,
-        origin: formatLocationSummary(quote.request.pickupLocation),
-        destination: formatLocationSummary(quote.request.deliveryLocation),
-        shipment_date: quote.request.requestedDate,
-        weight_lbs: toWeightLbs(quote.request),
-        request_payload: JSON.stringify(quote.request),
-        status: quote.status,
-        created_at: quote.createdAt,
-        updated_at: quote.createdAt
-      });
+      const createdAt = new Date(quote.createdAt);
+      await new sql.Request(transaction)
+        .input("id", sql.NVarChar(50), quote.id)
+        .input("operatorName", sql.NVarChar(200), quote.operatorName)
+        .input("origin", sql.NVarChar(300), formatLocationSummary(quote.request.pickupLocation))
+        .input("destination", sql.NVarChar(300), formatLocationSummary(quote.request.deliveryLocation))
+        .input("shipmentDate", sql.VarChar(10), quote.request.requestedDate)
+        .input("weightLbs", sql.Decimal(18, 2), toWeightLbs(quote.request))
+        .input("requestPayload", sql.NVarChar(sql.MAX), JSON.stringify(quote.request))
+        .input("status", sql.VarChar(20), quote.status)
+        .input("createdAt", sql.DateTime2(3), createdAt)
+        .query(`
+          INSERT dbo.quote_requests (
+            id, operator_name, origin, destination, shipment_date, weight_lbs,
+            request_payload, status, created_at, updated_at
+          ) VALUES (
+            @id, @operatorName, @origin, @destination, @shipmentDate, @weightLbs,
+            @requestPayload, @status, @createdAt, @createdAt
+          );
+        `);
 
       for (const carrierQuote of quote.carrierQuotes) {
-        insertCarrierQuote.run({
-          id: crypto.randomUUID(),
-          quote_request_id: quote.id,
-          carrier_key: carrierQuote.carrierKey,
-          carrier_name: carrierQuote.carrierName,
-          status: carrierQuote.status,
-          rate_amount: carrierQuote.rateAmount,
-          currency: carrierQuote.currency,
-          service_level: carrierQuote.serviceLevel,
-          transit_days: carrierQuote.transitDays,
-          raw_response: JSON.stringify({ seeded: true }),
-          error_message: carrierQuote.errorMessage,
-          requested_at: quote.createdAt,
-          responded_at: quote.createdAt,
-          updated_at: quote.createdAt
-        });
+        await new sql.Request(transaction)
+          .input("id", sql.UniqueIdentifier, crypto.randomUUID())
+          .input("quoteRequestId", sql.NVarChar(50), quote.id)
+          .input("carrierKey", sql.NVarChar(300), carrierQuote.carrierKey)
+          .input("carrierName", sql.NVarChar(300), carrierQuote.carrierName)
+          .input("status", sql.VarChar(20), carrierQuote.status)
+          .input("rateAmount", sql.Decimal(18, 2), carrierQuote.rateAmount)
+          .input("currency", sql.VarChar(10), carrierQuote.currency)
+          .input("serviceLevel", sql.NVarChar(300), carrierQuote.serviceLevel)
+          .input("transitDays", sql.Int, carrierQuote.transitDays)
+          .input("rawResponse", sql.NVarChar(sql.MAX), JSON.stringify({ seeded: true }))
+          .input("errorMessage", sql.NVarChar(sql.MAX), carrierQuote.errorMessage)
+          .input("createdAt", sql.DateTime2(3), createdAt)
+          .query(`
+            INSERT dbo.carrier_quotes (
+              id, quote_request_id, carrier_key, carrier_name, status, rate_amount, currency,
+              service_level, transit_days, raw_response, error_message, requested_at, responded_at, updated_at
+            ) VALUES (
+              @id, @quoteRequestId, @carrierKey, @carrierName, @status, @rateAmount, @currency,
+              @serviceLevel, @transitDays, @rawResponse, @errorMessage, @createdAt, @createdAt, @createdAt
+            );
+          `);
       }
     }
 
-    db.exec("COMMIT");
+    await transaction.commit();
   } catch (error) {
-    db.exec("ROLLBACK");
+    await transaction.rollback().catch(() => undefined);
     throw error;
   }
 }

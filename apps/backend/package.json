@@ -7,7 +7,8 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "test": "npm run build --workspace @tms/shared && npm run build && node dist/service.test.js && node dist/priority1.test.js",
+    "migrate:sqlite": "npm run build && node dist/migrate-sqlite.js",
+    "test": "npm run build --workspace @tms/shared && npm run build && node dist/service.test.js && node dist/threepl.test.js && node dist/priority1.test.js && node dist/roadrunner.test.js && node dist/wwex.test.js && node dist/forwardair.test.js && node dist/locations.test.js",
     "verify:start": "npm run build && node scripts/verify-start.mjs"
   },
   "dependencies": {
@@ -15,11 +16,14 @@
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "express": "^4.21.2",
-    "jose": "^6.2.4"
+    "jose": "^6.2.4",
+    "msnodesqlv8": "^5.2.3",
+    "mssql": "^12.7.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.18",
     "@types/express": "^5.0.1",
+    "@types/mssql": "^12.3.0",
     "@types/node": "^24.0.0",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3"

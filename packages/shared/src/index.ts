@@ -1,6 +1,8 @@
 export const quoteStatuses = ["submitted", "processing", "completed", "partial", "failed"] as const;
 export const carrierQuoteStatuses = ["pending", "success", "unavailable", "error"] as const;
 
+export { calculateDensity, freightClassForDensity, type DensityInput } from "./density.js";
+
 export type QuoteStatus = (typeof quoteStatuses)[number];
 export type CarrierQuoteStatus = (typeof carrierQuoteStatuses)[number];
 
@@ -11,6 +13,13 @@ export interface LocationInput {
   country: string;
 }
 
+export interface LocationLookup {
+  cityName: string;
+  stateCode: string;
+  zipCode: string;
+  countryCode: string;
+}
+
 export interface QuoteDimensionInput {
   handlingUnit: string;
   length: number;
@@ -18,6 +27,7 @@ export interface QuoteDimensionInput {
   height: number;
   dimensionUnit: string;
   quantity: number;
+  /** Total shipment weight across all handling units. */
   weight: number;
   weightUnit: string;
   freightClass: string;
@@ -39,7 +49,12 @@ export interface QuoteRequestInput {
   pickupLocation: LocationInput;
   deliveryLocation: LocationInput;
   dimensions: QuoteDimensionInput;
+  additionalDimensions?: QuoteDimensionInput[];
   specialServices: QuoteSpecialServices;
+}
+
+export function getQuoteDimensions(input: Pick<QuoteRequestInput, "dimensions" | "additionalDimensions">): QuoteDimensionInput[] {
+  return [input.dimensions, ...(input.additionalDimensions ?? [])];
 }
 
 export interface CarrierQuoteRecord {
@@ -52,6 +67,7 @@ export interface CarrierQuoteRecord {
   serviceLevel: string | null;
   transitDays: number | null;
   errorMessage: string | null;
+  warningMessage: string | null;
   requestedAt: string;
   respondedAt: string | null;
   updatedAt: string;

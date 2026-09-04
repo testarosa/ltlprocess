@@ -4,6 +4,8 @@ import type { QuoteSummary } from "@tms/shared";
 import { createQuote, fetchQuote, fetchQuoteHistory } from "../api";
 import { useAuth } from "../state";
 
+const PAGE_SIZE = 20;
+
 export function QuoteHistoryPage() {
   const navigate = useNavigate();
   const { session } = useAuth();
@@ -12,7 +14,8 @@ export function QuoteHistoryPage() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [selectedQuoteId, setSelectedQuoteId] = useState("");
-  const [copyingQuoteId, setCopyingQuoteId] = useState("");
+  const [refreshingQuoteId, setRefreshingQuoteId] = useState("");
+  const [currentPage, setCurrentPage] = useState(1);
 
   useEffect(() => {
     if (!session) return;
@@ -39,6 +42,13 @@ export function QuoteHistoryPage() {
 
     return true;
   });
+  const totalPages = Math.max(1, Math.ceil(filteredQuotes.length / PAGE_SIZE));
+  const pageStart = (currentPage - 1) * PAGE_SIZE;
+  const pagedQuotes = filteredQuotes.slice(pageStart, pageStart + PAGE_SIZE);
+
+  useEffect(() => {
+    setCurrentPage((page) => Math.min(page, totalPages));
+  }, [totalPages]);
 
   useEffect(() => {
     if (!filteredQuotes.some((quote) => quote.id === selectedQuoteId)) {
@@ -54,13 +64,17 @@ export function QuoteHistoryPage() {
     navigate(`/quotes/${selectedQuoteId}`);
   }
 
-  async function copyQuote(quoteId: string) {
+  function copyQuote(quoteId: string) {
+    navigate(`/?copy=${encodeURIComponent(quoteId)}`);
+  }
+
+  async function refreshQuote(quoteId: string) {
     if (!session) {
       return;
     }
 
     setError("");
-    setCopyingQuoteId(quoteId);
+    setRefreshingQuoteId(quoteId);
 
     try {
       const existingQuote = await fetchQuote(quoteId, session.token);
@@ -72,6 +86,7 @@ export function QuoteHistoryPage() {
           pickupLocation: existingQuote.pickupLocation,
           deliveryLocation: existingQuote.deliveryLocation,
           dimensions: existingQuote.dimensions,
+          additionalDimensions: existingQuote.additionalDimensions,
           specialServices: existingQuote.specialServices
         },
         session.token
@@ -79,14 +94,10 @@ export function QuoteHistoryPage() {
 
       navigate(`/quotes/${result.id}`);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Failed to copy quote.");
+      setError(nextError instanceof Error ? nextError.message : "Failed to refresh quote.");
     } finally {
-      setCopyingQuoteId("");
+      setRefreshingQuoteId("");
     }
-  }
-
-  async function refreshQuote(quoteId: string) {
-    await copyQuote(quoteId);
   }
 
   return (
@@ -105,9 +116,23 @@ export function QuoteHistoryPage() {
         <div className="results-filter-bar">
           <label className="inline-filter">
             <span>Requested Date</span>
-            <input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} />
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(event) => {
+                setDateFrom(event.target.value);
+                setCurrentPage(1);
+              }}
+            />
           </label>
-          <input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} />
+          <input
+            type="date"
+            value={dateTo}
+            onChange={(event) => {
+              setDateTo(event.target.value);
+              setCurrentPage(1);
+            }}
+          />
           <button type="button" className="compact-button">Apply</button>
         </div>
       </div>
@@ -132,7 +157,7 @@ export function QuoteHistoryPage() {
             </tr>
           </thead>
           <tbody>
-            {filteredQuotes.map((quote) => (
+            {pagedQuotes.map((quote) => (
               <tr
                 key={quote.id}
                 className={quote.id === selectedQuoteId ? "selected-row" : undefined}
@@ -149,31 +174,35 @@ export function QuoteHistoryPage() {
                 <td>{quote.deliveryZipCode}</td>
                 <td>{quote.isConfirmed}</td>
                 <td className="row-actions-cell">
-                  <Link to={`/quotes/${quote.id}`} onClick={(event) => event.stopPropagation()}>
-                    Open
-                  </Link>
-                  <button
-                    className="inline-action-button"
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void copyQuote(quote.id);
-                    }}
-                    disabled={copyingQuoteId === quote.id}
-                  >
-                    {copyingQuoteId === quote.id ? "Copying..." : "Copy"}
-                  </button>
-                  <button
-                    className="inline-action-button"
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void refreshQuote(quote.id);
-                    }}
-                    disabled={copyingQuoteId === quote.id}
-                  >
-                    {copyingQuoteId === quote.id ? "Refreshing..." : "Refresh"}
-                  </button>
+                  <div className="quote-row-actions" aria-label={`Actions for ${quote.id}`}>
+                    <Link className="quote-action quote-action-open" to={`/quotes/${quote.id}`} onClick={(event) => event.stopPropagation()}>
+                      <span className="quote-action-icon" aria-hidden="true">↗</span>
+                      Open
+                    </Link>
+                    <button
+                      className="quote-action"
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        copyQuote(quote.id);
+                      }}
+                    >
+                      <span className="quote-action-icon copy-icon" aria-hidden="true">□</span>
+                      Copy
+                    </button>
+                    <button
+                      className="quote-action"
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void refreshQuote(quote.id);
+                      }}
+                      disabled={refreshingQuoteId === quote.id}
+                    >
+                      <span className="quote-action-icon refresh-icon" aria-hidden="true">↻</span>
+                      {refreshingQuoteId === quote.id ? "Refreshing..." : "Refresh"}
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -185,7 +214,30 @@ export function QuoteHistoryPage() {
           </tbody>
         </table>
         <div className="results-footer">
-          <span>Rows: {filteredQuotes.length}</span>
+          <span>
+            {filteredQuotes.length === 0
+              ? "Rows: 0"
+              : `Rows ${pageStart + 1}-${Math.min(pageStart + PAGE_SIZE, filteredQuotes.length)} of ${filteredQuotes.length}`}
+          </span>
+          <div className="pagination-controls" aria-label="Quote history pagination">
+            <button
+              type="button"
+              className="pagination-button"
+              onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+              disabled={currentPage === 1}
+            >
+              Previous
+            </button>
+            <span>Page {currentPage} of {totalPages}</span>
+            <button
+              type="button"
+              className="pagination-button"
+              onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+              disabled={currentPage === totalPages}
+            >
+              Next
+            </button>
+          </div>
         </div>
       </div>
     </section>
