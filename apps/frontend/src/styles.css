@@ -251,6 +251,7 @@ label { display: grid; gap: 0.42rem; color: #344258; font-size: 0.84rem; font-we
 .detail-summary-grid { display: grid; grid-template-columns: 190px minmax(0,1fr); gap: 0; overflow: hidden; border: 1px solid var(--slate-200); border-radius: 9px; }
 .detail-summary-grid > div { min-height: 43px; padding: .7rem .85rem; border-bottom: 1px solid var(--slate-100); font-size: .84rem; }
 .detail-summary-grid > div:nth-last-child(-n+2) { border-bottom: 0; }
+.detail-summary-lines { display: grid; gap: .35rem; }
 .detail-label { background: #f8f9fb; color: #4a596d; font-weight: 750; }
 .detail-rates-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .9rem 1rem; border: 1px solid var(--slate-200); border-radius: 10px; background: #fff; box-shadow: var(--shadow-sm); }
 .detail-rates-toolbar > div { display: grid; gap: .14rem; }

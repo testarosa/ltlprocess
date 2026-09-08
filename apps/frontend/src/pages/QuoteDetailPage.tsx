@@ -23,23 +23,41 @@ function packageSummary(quote: QuoteRequestRecord): string {
   return `${units} handling unit(s), ${formatWeight(weightInPounds)} lbs / ${formatWeight(weightInKilograms)} kgs`;
 }
 
-function densitySummary(quote: QuoteRequestRecord): string {
+function densitySummary(quote: QuoteRequestRecord): string[] {
   return getQuoteDimensions(quote).map((dimension, index) => {
     const poundsPerCubicFoot = calculateDensity(dimension);
     if (poundsPerCubicFoot === null) return `#${index + 1}: -`;
     const kilogramsPerCubicMeter = poundsPerCubicFoot * 16.018463;
     return `#${index + 1}: ${poundsPerCubicFoot.toFixed(1)} lb/ft³ / ${kilogramsPerCubicMeter.toFixed(1)} kg/m³`;
-  }).join(" · ");
+  });
 }
 
-function dimensionSummary(quote: QuoteRequestRecord): string {
-  return getQuoteDimensions(quote).map((dimension, index) => [
+function formatDimensionValue(value: number): string {
+  return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+function dimensionSummary(quote: QuoteRequestRecord): string[] {
+  return getQuoteDimensions(quote).map((dimension, index) => {
+    const dimensions = [dimension.length, dimension.width, dimension.height];
+    const dimensionsInInches = dimension.dimensionUnit.toLowerCase() === "cm"
+      ? dimensions.map((value) => value / 2.54)
+      : dimensions;
+    const dimensionsInCentimeters = dimension.dimensionUnit.toLowerCase() === "cm"
+      ? dimensions
+      : dimensions.map((value) => value * 2.54);
+
+    return [
     `#${index + 1}: ${dimension.quantity} ${dimension.handlingUnit}`,
-    `${dimension.length} x ${dimension.width} x ${dimension.height} ${dimension.dimensionUnit}`,
+    `${dimensionsInInches.map(formatDimensionValue).join(" x ")} in / ${dimensionsInCentimeters.map(formatDimensionValue).join(" x ")} cm`,
     `${dimension.weight} ${dimension.weightUnit} (CLS ${dimension.freightClass || "--"})`,
     `HazMat? ${dimension.hazmat ? "Yes" : "No"}`,
     `Stackable? ${dimension.stackable ? "Yes" : "No"}`
-  ].join("; ")).join(" | ");
+    ].join("; ");
+  });
+}
+
+function SummaryLines({ lines }: { lines: string[] }) {
+  return <div className="detail-summary-lines">{lines.map((line, index) => <div key={index}>{line}</div>)}</div>;
 }
 
 const providerNames: Record<string, string> = {
@@ -211,10 +229,10 @@ export function QuoteDetailPage() {
               <div>{packageSummary(quote)}</div>
 
               <div className="detail-label">Dimensions:</div>
-              <div>{dimensionSummary(quote)}</div>
+              <SummaryLines lines={dimensionSummary(quote)} />
 
               <div className="detail-label">Density:</div>
-              <div>{densitySummary(quote)}</div>
+              <SummaryLines lines={densitySummary(quote)} />
 
               <div className="detail-label">Freight Classes:</div>
               <div>{getQuoteDimensions(quote).map((dimension) => dimension.freightClass || "-").join(", ")}</div>
